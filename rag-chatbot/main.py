@@ -17,11 +17,11 @@ try:
     env_path = Path('../.env')
     if env_path.exists():
         load_dotenv(env_path)
-        print("✅ Loaded environment variables from .env file")
+        print("Loaded environment variables from .env file")
     else:
-        print("ℹ️  No .env file found, using system environment variables")
+        print("No .env file found, using system environment variables")
 except ImportError:
-    print("ℹ️  python-dotenv not installed, using system environment variables")
+    print("python-dotenv not installed, using system environment variables")
 
 
 def setup_environment():
@@ -38,16 +38,16 @@ def setup_environment():
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
-        print("❌ Missing required environment variables:")
+        print("Missing required environment variables:")
         for var in missing_vars:
             print(f"   - {var}")
         print("\nPlease set these variables in your .env file or environment.")
         return False
     
-    print("✅ All required environment variables are set")
+    print("All required environment variables are set")
     
     # Show configuration summary
-    print(f"🔧 Configuration summary:")
+    print(f"Configuration summary:")
     print(f"   Cosmos DB: {os.getenv('COSMOS_DB_ENDPOINT')}")
     print(f"   OpenAI Chat: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
     print(f"   Chat Deployment: {os.getenv('AZURE_OPENAI_CHAT_DEPLOYMENT', 'Not set - will use default')}")
@@ -59,7 +59,7 @@ def setup_environment():
 
 def build_knowledge_base(search_mode="cached"):
     """Build the knowledge base from scratch"""
-    print(f"🔧 Building knowledge base for {search_mode} mode...")
+    print(f"Building knowledge base for {search_mode} mode...")
     
     try:
         kb = KnowledgeBase()
@@ -73,12 +73,12 @@ def build_knowledge_base(search_mode="cached"):
             # For cached mode, build without embeddings (will be added later)
             data = kb.build_knowledge_base()
         
-        print(f"✅ Knowledge base built with {len(data)} text chunks")
+        print(f"Knowledge base built with {len(data)} text chunks")
         return data
     
     except ValueError as e:
-        print(f"❌ Configuration Error: {e}")
-        print("\n🔧 To fix this:")
+        print(f"Configuration Error: {e}")
+        print("\nTo fix this:")
         print("1. Check your Azure Cosmos DB account in the Azure Portal")
         print("2. Go to 'Keys' section")
         print("3. Copy the 'PRIMARY KEY' (not the connection string)")
@@ -87,16 +87,16 @@ def build_knowledge_base(search_mode="cached"):
         return None
     
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"Unexpected error: {e}")
         return None
 
 
 def create_embeddings(data=None, save_path="embeddings", search_mode="cached"):
     """Create embeddings and search index"""
-    print(f"🧠 Creating embeddings and search index for {search_mode} mode...")
+    print(f"Creating embeddings and search index for {search_mode} mode...")
     
     if search_mode == "cosmosdb":
-        print("📄 For CosmosDB mode, embeddings are stored directly in the database during knowledge base build.")
+        print("For CosmosDB mode, embeddings are stored directly in the database during knowledge base build.")
         return None
     
     # Cached mode - create in-memory embeddings
@@ -113,12 +113,12 @@ def create_embeddings(data=None, save_path="embeddings", search_mode="cached"):
         # Save embeddings
         embedding_manager.save_embeddings(save_path)
         
-        print(f"✅ Embeddings created and saved to {save_path}")
+        print(f"Embeddings created and saved to {save_path}")
         return embedding_manager
         
     except Exception as e:
-        print(f"❌ Failed to create embeddings: {e}")
-        print("\n🔧 Common issues and solutions:")
+        print(f"Failed to create embeddings: {e}")
+        print("\nCommon issues and solutions:")
         print("1. Check your Azure OpenAI embeddings API key and endpoint")
         print("2. Verify your embeddings deployment name is correct")
         print("3. Ensure your deployment has sufficient quota")
@@ -155,7 +155,7 @@ def run_tests(embeddings_path="embeddings", search_mode="cached"):
     
     # Calculate MAP score
     map_score = evaluator.calculate_map_score(test_cases)
-    print(f"\n📊 Mean Average Precision (MAP) Score: {map_score:.3f}")
+    print(f"\nMean Average Precision (MAP) Score: {map_score:.3f}")
     
     # Generate and print report
     report = evaluator.generate_report(results)
@@ -169,12 +169,12 @@ def run_tests(embeddings_path="embeddings", search_mode="cached"):
     with open(f"test_report_{search_mode}_{timestamp}.txt", 'w') as f:
         f.write(report)
     
-    print("✅ Test completed! Results and report saved.")
+    print("Test completed! Results and report saved.")
 
 
 def quick_test(embeddings_path="embeddings", search_mode="cached"):
     """Run a quick test with a single query"""
-    print(f"⚡ Quick test in {search_mode} mode...")
+    print(f"Quick test in {search_mode} mode...")
     
     # Initialize chatbot with specified mode
     chatbot = RAGChatBot(search_mode=search_mode)
@@ -205,7 +205,7 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"🔍 Using {args.mode.upper()} mode")
+    print(f"Using {args.mode.upper()} mode")
     if args.mode == "cached":
         print("   → Loads all embeddings into memory for fast search")
         print("   → Good for demonstrating vector similarity concepts")
@@ -253,19 +253,19 @@ def main():
         if not setup_environment():
             return
         
-        print("🚀 Running full setup...")
+        print("Running full setup...")
         data = build_knowledge_base(args.mode)
         if data is not None:
             result = create_embeddings(data, args.embeddings_path, args.mode)
             if result is not None:  # Only proceed if embeddings were successful
                 quick_test(args.embeddings_path, args.mode)
-                print(f"\n✅ Full setup complete for {args.mode} mode!")
-                print(f"💡 You can now run 'python main.py chat --mode {args.mode}' to start chatting.")
-                print(f"💡 To try the other mode, use --mode {'cosmosdb' if args.mode == 'cached' else 'cached'}")
+                print(f"\nFull setup complete for {args.mode} mode!")
+                print(f"You can now run 'python main.py chat --mode {args.mode}' to start chatting.")
+                print(f"To try the other mode, use --mode {'cosmosdb' if args.mode == 'cached' else 'cached'}")
             else:
-                print(f"\n❌ Setup failed during embedding creation.")
+                print(f"\nSetup failed during embedding creation.")
         else:
-            print(f"\n❌ Setup failed during knowledge base creation.")
+            print(f"\nSetup failed during knowledge base creation.")
 
 
 if __name__ == "__main__":

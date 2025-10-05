@@ -75,13 +75,13 @@ class RAGChatBot:
         
         # Check if the endpoint format looks correct
         if openai.api_base.endswith('/openai/responses'):
-            print("⚠️  Warning: Your AZURE_OPENAI_ENDPOINT ends with '/openai/responses'")
+            print("Warning: Your AZURE_OPENAI_ENDPOINT ends with '/openai/responses'")
             print("   This might be incorrect. Azure OpenAI endpoints typically look like:")
             print("   https://your-resource.openai.azure.com/")
             print("   You may need to remove '/openai/responses' from your endpoint.")
         
-        print(f"🔧 Chat endpoint: {openai.api_base}")
-        print(f"🔧 Chat API key: {openai.api_key[:8]}...{openai.api_key[-4:]}")
+        print(f"Chat endpoint: {openai.api_base}")
+        print(f"Chat API key: {openai.api_key[:8]}...{openai.api_key[-4:]}")
     
     def load_knowledge_base(self, embeddings_filepath: str = None, force_rebuild: bool = False):
         """
@@ -223,7 +223,7 @@ class RAGChatBot:
                     print(f"Retry also failed: {e2}")
             
             if "404" in error_msg:
-                print("🔧 This is likely a configuration issue:")
+                print("This is likely a configuration issue:")
                 print("1. Check your AZURE_OPENAI_ENDPOINT URL format")
                 print("2. Verify your chat model deployment name")
                 print("3. Ensure the model is deployed in Azure OpenAI Studio")
@@ -232,7 +232,7 @@ class RAGChatBot:
                 
                 if openai.api_base and '/openai/responses' in openai.api_base:
                     corrected_url = openai.api_base.replace('/openai/responses', '')
-                    print(f"💡 Try updating your endpoint to: {corrected_url}")
+                    print(f"Try updating your endpoint to: {corrected_url}")
             
             return "I apologize, but I encountered an error while generating a response."
     

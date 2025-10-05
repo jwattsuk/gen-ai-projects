@@ -39,13 +39,13 @@ class EmbeddingService:
         
         # Determine if this is a Cognitive Services endpoint or Azure OpenAI endpoint
         if 'cognitive.microsoft.com' in self.api_base:
-            print("🔧 Detected Cognitive Services endpoint")
+            print("Detected Cognitive Services endpoint")
             self.is_cognitive_services = True
             # For Cognitive Services, we need to construct the full URL
             if not self.api_base.endswith('/'):
                 self.api_base += '/'
         else:
-            print("🔧 Detected Azure OpenAI endpoint")
+            print("Detected Azure OpenAI endpoint")
             self.is_cognitive_services = False
             # For Azure OpenAI, use the standard configuration
             openai.api_type = "azure"
@@ -53,8 +53,8 @@ class EmbeddingService:
             openai.api_base = self.api_base
             openai.api_version = "2023-07-01-preview"
         
-        print(f"🔧 Using embeddings endpoint: {self.api_base}")
-        print(f"🔧 Using embeddings API key: {self.api_key[:8]}...{self.api_key[-4:]}")
+        print(f"Using embeddings endpoint: {self.api_base}")
+        print(f"Using embeddings API key: {self.api_key[:8]}...{self.api_key[-4:]}")
     
     def _validate_model(self):
         """Validate that the model is available"""
@@ -63,7 +63,7 @@ class EmbeddingService:
             if self.is_cognitive_services:
                 test_response = self._create_embedding_cognitive_services("test")
                 if test_response:
-                    print(f"✅ Embedding model '{self.model}' is working")
+                    print(f"Embedding model '{self.model}' is working")
                     print(f"   Embedding dimension: {len(test_response)}")
                 else:
                     raise ValueError("No response from Cognitive Services")
@@ -72,13 +72,13 @@ class EmbeddingService:
                     input="test",
                     model=self.model
                 )
-                print(f"✅ Embedding model '{self.model}' is working")
+                print(f"Embedding model '{self.model}' is working")
                 print(f"   Embedding dimension: {len(test_response.data[0].embedding)}")
         except Exception as e:
             error_msg = str(e)
             if "404" in error_msg:
-                print(f"❌ Embedding model '{self.model}' not found")
-                print("🔧 Possible solutions:")
+                print(f"Embedding model '{self.model}' not found")
+                print("Possible solutions:")
                 print("1. Check your Azure deployment")
                 print("2. Verify the deployment name matches your configuration")
                 print("3. For Cognitive Services, check the full deployment URL")
@@ -405,8 +405,8 @@ class EmbeddingManager:
         try:
             embeddings = self.embedding_service.create_embeddings_batch(texts)
         except Exception as e:
-            print(f"❌ Failed to create embeddings: {e}")
-            print("\n🔧 Possible solutions:")
+            print(f"Failed to create embeddings: {e}")
+            print("\nPossible solutions:")
             print("1. Check your Azure OpenAI embeddings configuration")
             print("2. Verify your API keys and endpoints are correct")
             print("3. Ensure your embeddings deployment is active")
@@ -423,7 +423,7 @@ class EmbeddingManager:
             try:
                 self.search_index.build_index(embeddings, df_with_embeddings)
             except Exception as e:
-                print(f"❌ Failed to build search index: {e}")
+                print(f"Failed to build search index: {e}")
                 raise
         
         self.df = df_with_embeddings
