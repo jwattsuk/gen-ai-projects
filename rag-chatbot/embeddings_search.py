@@ -129,16 +129,21 @@ class EmbeddingService:
         """
         try:
             if self.is_cognitive_services:
-                return self._create_embedding_cognitive_services(text)
+                embedding = self._create_embedding_cognitive_services(text)
             else:
                 response = openai.embeddings.create(
                     input=text,
                     model=self.model
                 )
-                return response.data[0].embedding
+                embedding = response.data[0].embedding
+            
+            if not embedding:
+                raise ValueError("Received empty embedding from API")
+            
+            return embedding
         except Exception as e:
-            print(f"Error creating embedding: {e}")
-            return []
+            print(f"Error creating embedding for text '{text[:50]}...': {e}")
+            raise
     
     def create_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """
@@ -151,12 +156,39 @@ class EmbeddingService:
             List of embedding vectors
         """
         embeddings = []
+        failed_count = 0
+        
         for i, text in enumerate(texts):
             if i % 10 == 0:
                 print(f"Processing embedding {i+1}/{len(texts)}")
             
-            embedding = self.create_embedding(text)
-            embeddings.append(embedding)
+            try:
+                embedding = self.create_embedding(text)
+                if embedding:
+                    embeddings.append(embedding)
+                else:
+                    print(f"Warning: Empty embedding for text {i+1}")
+                    failed_count += 1
+                    # Use a zero vector as placeholder (same dimension as successful embeddings)
+                    if embeddings:
+                        embeddings.append([0.0] * len(embeddings[0]))
+                    else:
+                        # If this is the first embedding and it failed, we need to handle this
+                        raise ValueError(f"First embedding failed, cannot determine embedding dimension")
+            except Exception as e:
+                print(f"Failed to create embedding for text {i+1}: {e}")
+                failed_count += 1
+                if embeddings:
+                    # Use zero vector as placeholder
+                    embeddings.append([0.0] * len(embeddings[0]))
+                else:
+                    raise ValueError(f"Cannot create embeddings - first embedding failed: {e}")
+        
+        if failed_count > 0:
+            print(f"Warning: {failed_count} out of {len(texts)} embeddings failed")
+        
+        if not embeddings:
+            raise ValueError("No successful embeddings were created")
         
         return embeddings
 
@@ -177,6 +209,7 @@ class SearchIndex:
         self.nbrs = None
         self.embeddings = None
         self.metadata = None
+        self.valid_indices = None
     
     def build_index(self, embeddings: List[List[float]], metadata: pd.DataFrame = None):
         """
@@ -186,16 +219,40 @@ class SearchIndex:
             embeddings: List of embedding vectors
             metadata: Optional metadata DataFrame associated with embeddings
         """
-        self.embeddings = np.array(embeddings)
-        self.metadata = metadata
+        if not embeddings:
+            raise ValueError("Cannot build index: no embeddings provided")
+        
+        # Filter out empty embeddings
+        valid_embeddings = []
+        valid_indices = []
+        
+        for i, emb in enumerate(embeddings):
+            if emb and len(emb) > 0 and any(x != 0 for x in emb):
+                valid_embeddings.append(emb)
+                valid_indices.append(i)
+        
+        if not valid_embeddings:
+            raise ValueError("Cannot build index: no valid embeddings found")
+        
+        if len(valid_embeddings) < len(embeddings):
+            print(f"Warning: Using {len(valid_embeddings)} valid embeddings out of {len(embeddings)} total")
+        
+        self.embeddings = np.array(valid_embeddings)
+        self.valid_indices = valid_indices
+        
+        # Filter metadata to match valid embeddings
+        if metadata is not None:
+            self.metadata = metadata.iloc[valid_indices].reset_index(drop=True)
+        else:
+            self.metadata = metadata
         
         # Build the index
         self.nbrs = NearestNeighbors(
-            n_neighbors=self.n_neighbors,
+            n_neighbors=min(self.n_neighbors, len(valid_embeddings)),
             algorithm=self.algorithm
         ).fit(self.embeddings)
         
-        print(f"Built search index with {len(embeddings)} embeddings")
+        print(f"Built search index with {len(valid_embeddings)} valid embeddings")
     
     def search(self, query_embedding: List[float], k: int = None) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -231,6 +288,9 @@ class SearchIndex:
         Returns:
             List of dictionaries containing document info and similarity scores
         """
+        if not query_embedding:
+            raise ValueError("Query embedding cannot be empty")
+        
         distances, indices = self.search(query_embedding, k)
         
         results = []
@@ -288,18 +348,45 @@ class SearchIndex:
 
 
 class EmbeddingManager:
-    """Main class that combines embedding service and search index"""
+    """Main class that combines embedding service and search index with dual-mode support"""
     
-    def __init__(self, embedding_model: str = "text-embedding-ada-002"):
+    def __init__(self, embedding_model: str = "text-embedding-ada-002", 
+                 search_mode: str = "cached"):
         """
         Initialize the embedding manager
         
         Args:
             embedding_model: Model to use for embeddings
+            search_mode: Either "cached" (load all into memory) or "cosmosdb" (direct vector search)
         """
         self.embedding_service = EmbeddingService(embedding_model)
         self.search_index = SearchIndex()
+        self.search_mode = search_mode
         self.df = None
+        self.cosmos_client = None
+        
+        # Initialize CosmosDB client if using cosmosdb mode
+        if search_mode == "cosmosdb":
+            from knowledge_base import CosmosDBClient
+            self.cosmos_client = CosmosDBClient()
+    
+    def set_search_mode(self, mode: str):
+        """
+        Change the search mode
+        
+        Args:
+            mode: Either "cached" or "cosmosdb"
+        """
+        if mode not in ["cached", "cosmosdb"]:
+            raise ValueError("search_mode must be either 'cached' or 'cosmosdb'")
+        
+        self.search_mode = mode
+        
+        if mode == "cosmosdb" and self.cosmos_client is None:
+            from knowledge_base import CosmosDBClient
+            self.cosmos_client = CosmosDBClient()
+        
+        print(f"Search mode set to: {mode}")
     
     def process_dataframe(self, df: pd.DataFrame, text_column: str = 'chunks') -> pd.DataFrame:
         """
@@ -314,14 +401,30 @@ class EmbeddingManager:
         """
         print("Creating embeddings...")
         texts = df[text_column].tolist()
-        embeddings = self.embedding_service.create_embeddings_batch(texts)
+        
+        try:
+            embeddings = self.embedding_service.create_embeddings_batch(texts)
+        except Exception as e:
+            print(f"❌ Failed to create embeddings: {e}")
+            print("\n🔧 Possible solutions:")
+            print("1. Check your Azure OpenAI embeddings configuration")
+            print("2. Verify your API keys and endpoints are correct")
+            print("3. Ensure your embeddings deployment is active")
+            print("4. Check network connectivity to Azure")
+            raise
         
         # Add embeddings to DataFrame
         df_with_embeddings = df.copy()
         df_with_embeddings['embeddings'] = embeddings
         
-        print("Building search index...")
-        self.search_index.build_index(embeddings, df_with_embeddings)
+        # Build search index for cached mode
+        if self.search_mode == "cached":
+            print("Building cached search index...")
+            try:
+                self.search_index.build_index(embeddings, df_with_embeddings)
+            except Exception as e:
+                print(f"❌ Failed to build search index: {e}")
+                raise
         
         self.df = df_with_embeddings
         return df_with_embeddings
@@ -329,6 +432,7 @@ class EmbeddingManager:
     def search_similar(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
         Search for similar documents given a text query
+        Uses either cached or CosmosDB mode based on configuration
         
         Args:
             query: Text query
@@ -338,7 +442,75 @@ class EmbeddingManager:
             List of similar documents with metadata
         """
         query_embedding = self.embedding_service.create_embedding(query)
+        
+        if self.search_mode == "cosmosdb":
+            return self._search_cosmosdb(query_embedding, k)
+        else:
+            return self._search_cached(query_embedding, k)
+    
+    def _search_cached(self, query_embedding: List[float], k: int) -> List[Dict[str, Any]]:
+        """Search using cached in-memory index"""
+        if self.search_index.nbrs is None:
+            raise ValueError("Cached search index not built. Use process_dataframe() or load_embeddings() first.")
+        
         return self.search_index.get_similar_documents(query_embedding, k)
+    
+    def _search_cosmosdb(self, query_embedding: List[float], k: int) -> List[Dict[str, Any]]:
+        """Search using direct CosmosDB vector search"""
+        if self.cosmos_client is None:
+            raise ValueError("CosmosDB client not initialized. Set search_mode to 'cosmosdb' first.")
+        
+        results = self.cosmos_client.vector_search(query_embedding, k)
+        
+        # Convert CosmosDB results to standard format
+        formatted_results = []
+        for i, doc in enumerate(results):
+            result = {
+                'index': i,
+                'distance': doc.get('distance', 0.0),
+                'similarity_score': doc.get('similarity_score', 0.0),
+                'text': doc.get('chunk', ''),
+                'path': doc.get('path', ''),
+                'original_text': doc.get('text', '')
+            }
+            formatted_results.append(result)
+        
+        return formatted_results
+    
+    def load_from_cosmosdb(self):
+        """Load embeddings from CosmosDB for cached mode"""
+        if self.cosmos_client is None:
+            from knowledge_base import CosmosDBClient
+            self.cosmos_client = CosmosDBClient()
+        
+        print("Loading documents and embeddings from CosmosDB...")
+        docs = self.cosmos_client.get_all_documents_with_embeddings()
+        
+        if not docs:
+            raise ValueError("No documents with embeddings found in CosmosDB")
+        
+        # Convert to DataFrame format
+        data = []
+        embeddings = []
+        
+        for doc in docs:
+            data.append({
+                'path': doc.get('path', ''),
+                'text': doc.get('text', ''),
+                'chunks': doc.get('chunk', ''),
+                'embeddings': doc.get('embedding', [])
+            })
+            embeddings.append(doc.get('embedding', []))
+        
+        self.df = pd.DataFrame(data)
+        
+        # Build search index for cached mode
+        if self.search_mode == "cached" and embeddings:
+            print("Building cached search index from CosmosDB data...")
+            self.search_index.build_index(embeddings, self.df)
+        
+        print(f"Loaded {len(docs)} documents from CosmosDB")
+        return self.df
     
     def save_embeddings(self, filepath: str):
         """Save embeddings and search index"""
@@ -347,8 +519,9 @@ class EmbeddingManager:
             self.df.to_pickle(f"{filepath}_dataframe.pkl")
             print(f"DataFrame saved to {filepath}_dataframe.pkl")
         
-        # Save search index
-        self.search_index.save_index(f"{filepath}_index.json")
+        # Save search index for cached mode
+        if self.search_mode == "cached":
+            self.search_index.save_index(f"{filepath}_index.json")
     
     def load_embeddings(self, filepath: str):
         """Load embeddings and search index"""
@@ -356,31 +529,77 @@ class EmbeddingManager:
         self.df = pd.read_pickle(f"{filepath}_dataframe.pkl")
         print(f"DataFrame loaded from {filepath}_dataframe.pkl")
         
-        # Load search index and set metadata
-        self.search_index.load_index(f"{filepath}_index.json")
-        self.search_index.metadata = self.df
+        # Load search index for cached mode
+        if self.search_mode == "cached":
+            self.search_index.load_index(f"{filepath}_index.json")
+            self.search_index.metadata = self.df
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage demonstrating both modes
     from knowledge_base import KnowledgeBase
+    
+    print("=== RAG Application with Dual Search Modes ===\n")
+    
+    # Example 1: Cached Mode (Traditional approach)
+    print("1. CACHED MODE - Load all embeddings into memory")
+    print("-" * 50)
+    
+    # Create embeddings and search index in cached mode
+    embedding_manager_cached = EmbeddingManager(search_mode="cached")
     
     # Load knowledge base
     kb = KnowledgeBase()
     data = kb.build_knowledge_base()
     
-    # Create embeddings and search index
-    embedding_manager = EmbeddingManager()
-    data_with_embeddings = embedding_manager.process_dataframe(data)
+    # Process and build in-memory index
+    data_with_embeddings = embedding_manager_cached.process_dataframe(data)
     
-    # Save embeddings
-    embedding_manager.save_embeddings("embeddings")
+    # Save embeddings for future use
+    embedding_manager_cached.save_embeddings("embeddings")
     
-    # Test search
-    results = embedding_manager.search_similar("what is a perceptron?", k=3)
+    # Test cached search
+    print("\nTesting cached search:")
+    results = embedding_manager_cached.search_similar("what is a perceptron?", k=3)
     for i, result in enumerate(results):
-        print(f"Result {i+1}:")
-        print(f"  Similarity: {result['similarity_score']:.4f}")
-        print(f"  Text: {result['text'][:100]}...")
-        print(f"  Path: {result['path']}")
-        print()
+        print(f"  Result {i+1}: Similarity: {result['similarity_score']:.4f}")
+        print(f"    Text: {result['text'][:80]}...")
+        print(f"    Source: {result['path']}")
+    
+    print("\n" + "="*60 + "\n")
+    
+    # Example 2: CosmosDB Mode (Direct vector search)
+    print("2. COSMOSDB MODE - Direct vector search in database")
+    print("-" * 50)
+    
+    # Create embedding manager in CosmosDB mode
+    embedding_manager_cosmos = EmbeddingManager(search_mode="cosmosdb")
+    
+    # Store embeddings in CosmosDB (build KB with embeddings)
+    kb_with_embeddings = KnowledgeBase()
+    embedding_service = embedding_manager_cosmos.embedding_service
+    data_cosmos = kb_with_embeddings.build_knowledge_base(
+        with_embeddings=True, 
+        embedding_service=embedding_service
+    )
+    
+    print("\nTesting CosmosDB direct search:")
+    results_cosmos = embedding_manager_cosmos.search_similar("what is a perceptron?", k=3)
+    for i, result in enumerate(results_cosmos):
+        print(f"  Result {i+1}: Similarity: {result['similarity_score']:.4f}")
+        print(f"    Text: {result['text'][:80]}...")
+        print(f"    Source: {result['path']}")
+    
+    print("\n" + "="*60 + "\n")
+    print("Mode Comparison:")
+    print("  CACHED MODE:")
+    print("    - Faster search (in-memory)")
+    print("    - Uses more memory")
+    print("    - Good for demonstrating vector similarity")
+    print("    - Requires loading all data at startup")
+    print()
+    print("  COSMOSDB MODE:")
+    print("    - More scalable (doesn't load all data)")
+    print("    - Slightly slower search (database query)")
+    print("    - True vector database approach")
+    print("    - Better for production with large datasets")

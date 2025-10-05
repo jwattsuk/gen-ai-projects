@@ -14,13 +14,15 @@ class RAGChatBot:
     """
     Retrieval Augmented Generation Chatbot
     Combines document retrieval with language model generation
+    Supports both cached and CosmosDB vector search modes
     """
     
     def __init__(self, 
                  model: str = None,
                  temperature: float = 0.7,
                  max_tokens: int = 800,
-                 top_k_documents: int = 3):
+                 top_k_documents: int = 3,
+                 search_mode: str = "cached"):
         """
         Initialize the RAG chatbot
         
@@ -29,17 +31,37 @@ class RAGChatBot:
             temperature: Temperature for text generation
             max_tokens: Maximum tokens in response
             top_k_documents: Number of documents to retrieve for context
+            search_mode: Either "cached" (load all into memory) or "cosmosdb" (direct vector search)
         """
         # Use deployment name from environment if not specified
         self.model = model or os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-35-turbo-1106")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.top_k_documents = top_k_documents
+        self.search_mode = search_mode
         
         self.embedding_manager = None
         self.conversation_history = []
         
         self._setup_openai()
+    
+    def set_search_mode(self, mode: str):
+        """
+        Change the search mode and reinitialize embedding manager
+        
+        Args:
+            mode: Either "cached" or "cosmosdb"
+        """
+        if mode not in ["cached", "cosmosdb"]:
+            raise ValueError("search_mode must be either 'cached' or 'cosmosdb'")
+        
+        self.search_mode = mode
+        
+        # Reinitialize embedding manager if it exists
+        if self.embedding_manager:
+            self.embedding_manager.set_search_mode(mode)
+        
+        print(f"Chatbot search mode set to: {mode}")
     
     def _setup_openai(self):
         """Setup OpenAI configuration for Azure"""
@@ -61,22 +83,30 @@ class RAGChatBot:
         print(f"🔧 Chat endpoint: {openai.api_base}")
         print(f"🔧 Chat API key: {openai.api_key[:8]}...{openai.api_key[-4:]}")
     
-    def load_knowledge_base(self, embeddings_filepath: str = None):
+    def load_knowledge_base(self, embeddings_filepath: str = None, force_rebuild: bool = False):
         """
-        Load the knowledge base and embeddings
+        Load the knowledge base and embeddings based on search mode
         
         Args:
-            embeddings_filepath: Path to saved embeddings (without extension)
+            embeddings_filepath: Path to saved embeddings (without extension) for cached mode
+            force_rebuild: Whether to force rebuilding the knowledge base
         """
-        self.embedding_manager = EmbeddingManager()
+        self.embedding_manager = EmbeddingManager(search_mode=self.search_mode)
         
-        if embeddings_filepath and os.path.exists(f"{embeddings_filepath}_dataframe.pkl"):
+        if self.search_mode == "cached":
+            self._load_cached_mode(embeddings_filepath, force_rebuild)
+        else:  # cosmosdb mode
+            self._load_cosmosdb_mode(embeddings_filepath, force_rebuild)
+    
+    def _load_cached_mode(self, embeddings_filepath: str = None, force_rebuild: bool = False):
+        """Load knowledge base in cached mode"""
+        if embeddings_filepath and os.path.exists(f"{embeddings_filepath}_dataframe.pkl") and not force_rebuild:
             # Load existing embeddings
             self.embedding_manager.load_embeddings(embeddings_filepath)
-            print("Loaded existing embeddings")
+            print("Loaded existing embeddings for cached mode")
         else:
             # Create new embeddings
-            print("Creating new knowledge base and embeddings...")
+            print("Creating new knowledge base and embeddings for cached mode...")
             kb = KnowledgeBase()
             data = kb.build_knowledge_base()
             self.embedding_manager.process_dataframe(data)
@@ -84,6 +114,24 @@ class RAGChatBot:
             if embeddings_filepath:
                 self.embedding_manager.save_embeddings(embeddings_filepath)
                 print(f"Saved embeddings to {embeddings_filepath}")
+    
+    def _load_cosmosdb_mode(self, embeddings_filepath: str = None, force_rebuild: bool = False):
+        """Load knowledge base in CosmosDB mode"""
+        try:
+            # Try to load from CosmosDB first
+            if not force_rebuild:
+                self.embedding_manager.load_from_cosmosdb()
+                print("Loaded existing embeddings from CosmosDB for direct search mode")
+                return
+        except ValueError as e:
+            print(f"Could not load from CosmosDB: {e}")
+            print("Building new knowledge base with embeddings...")
+        
+        # Build new knowledge base with embeddings in CosmosDB
+        kb = KnowledgeBase()
+        embedding_service = self.embedding_manager.embedding_service
+        data = kb.build_knowledge_base(with_embeddings=True, embedding_service=embedding_service)
+        print("Knowledge base with embeddings stored in CosmosDB")
     
     def retrieve_context(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -197,7 +245,7 @@ class RAGChatBot:
             include_sources: Whether to include source information in response
             
         Returns:
-            Dictionary containing response, sources, and metadata
+            Dictionary containing response, sources, metadata, and search mode info
         """
         # Retrieve relevant documents
         retrieved_docs = self.retrieve_context(query)
@@ -219,7 +267,13 @@ class RAGChatBot:
             "response": response,
             "query": query,
             "sources": retrieved_docs if include_sources else [],
-            "context_used": context
+            "context_used": context,
+            "search_mode": self.search_mode,
+            "search_info": {
+                "mode": self.search_mode,
+                "description": "In-memory vector search" if self.search_mode == "cached" 
+                            else "Direct CosmosDB vector search"
+            }
         }
         
         return result
@@ -286,21 +340,45 @@ class ChatInterface:
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage with both search modes
+    import sys
     
-    # Initialize chatbot
-    chatbot = RAGChatBot()
+    # Default to cached mode, but allow command line override
+    search_mode = "cached"
+    if len(sys.argv) > 1 and sys.argv[1] in ["cached", "cosmosdb"]:
+        search_mode = sys.argv[1]
+    
+    print(f"=== RAG Chatbot Demo - {search_mode.upper()} MODE ===")
+    
+    # Initialize chatbot with specified mode
+    chatbot = RAGChatBot(search_mode=search_mode)
     
     # Load knowledge base
+    print(f"\nLoading knowledge base in {search_mode} mode...")
     chatbot.load_knowledge_base("embeddings")
     
     # Test with a single query
+    print("\n--- Testing with sample query ---")
     result = chatbot.chat("What is a perceptron?")
-    print("Response:", result['response'])
-    print("\nSources used:")
+    print(f"Search Mode: {result['search_info']['description']}")
+    print(f"Response: {result['response']}")
+    print(f"\nSources used:")
     for i, source in enumerate(result['sources']):
         print(f"{i+1}. {source['path']} - Similarity: {source['similarity_score']:.3f}")
     
+    print(f"\n{'='*60}")
+    print("Mode Comparison:")
+    print("- CACHED MODE: python chatbot.py cached")
+    print("  • Faster search (in-memory)")
+    print("  • Good for demonstrating vector similarity")
+    print("  • Uses more memory")
+    print()
+    print("- COSMOSDB MODE: python chatbot.py cosmosdb") 
+    print("  • More scalable vector database approach")
+    print("  • Direct queries to CosmosDB")
+    print("  • Better for production with large datasets")
+    
     # Uncomment to run interactive chat
+    # print(f"\nStarting interactive chat in {search_mode} mode...")
     # interface = ChatInterface(chatbot)
     # interface.run()

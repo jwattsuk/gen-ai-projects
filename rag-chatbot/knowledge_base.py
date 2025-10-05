@@ -45,7 +45,7 @@ class TextProcessor:
 
 
 class CosmosDBClient:
-    """Handles Cosmos DB operations"""
+    """Handles Cosmos DB operations including vector search"""
     
     def __init__(self, database_name: str = 'rag-cosmos-db', container_name: str = 'data'):
         """
@@ -100,6 +100,14 @@ class CosmosDBClient:
         except Exception as e:
             print(f"Error storing document: {e}")
     
+    def store_document_with_embedding(self, document: Dict[str, Any], embedding: List[float]) -> None:
+        """Store a document with its embedding vector in Cosmos DB"""
+        try:
+            document['embedding'] = embedding
+            self.container.create_item(body=document)
+        except Exception as e:
+            print(f"Error storing document with embedding: {e}")
+    
     def query_documents(self, query: str) -> List[Dict[str, Any]]:
         """Query documents from Cosmos DB"""
         try:
@@ -111,6 +119,66 @@ class CosmosDBClient:
         except Exception as e:
             print(f"Error querying documents: {e}")
             return []
+    
+    def vector_search(self, query_embedding: List[float], k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Perform vector similarity search using CosmosDB's vector capabilities
+        
+        Args:
+            query_embedding: The embedding vector to search for
+            k: Number of top results to return
+            
+        Returns:
+            List of documents with similarity scores
+        """
+        try:
+            # Note: This uses a simulated vector search approach since CosmosDB
+            # may not have native vector search depending on your setup.
+            # For true vector search, you'd need to use CosmosDB's vector indexing
+            # and vector search SQL extensions.
+            
+            # Get all documents with embeddings
+            query = "SELECT * FROM c WHERE IS_DEFINED(c.embedding)"
+            all_docs = self.query_documents(query)
+            
+            if not all_docs:
+                return []
+            
+            # Calculate cosine similarity for each document
+            import numpy as np
+            
+            results = []
+            query_vector = np.array(query_embedding)
+            
+            for doc in all_docs:
+                if 'embedding' in doc and doc['embedding']:
+                    doc_vector = np.array(doc['embedding'])
+                    
+                    # Calculate cosine similarity
+                    dot_product = np.dot(query_vector, doc_vector)
+                    query_norm = np.linalg.norm(query_vector)
+                    doc_norm = np.linalg.norm(doc_vector)
+                    
+                    if query_norm != 0 and doc_norm != 0:
+                        similarity = dot_product / (query_norm * doc_norm)
+                        
+                        # Add similarity score to document
+                        doc['similarity_score'] = float(similarity)
+                        doc['distance'] = float(1 - similarity)  # For compatibility
+                        results.append(doc)
+            
+            # Sort by similarity (highest first) and return top k
+            results.sort(key=lambda x: x['similarity_score'], reverse=True)
+            return results[:k]
+            
+        except Exception as e:
+            print(f"Error performing vector search: {e}")
+            return []
+    
+    def get_all_documents_with_embeddings(self) -> List[Dict[str, Any]]:
+        """Get all documents that have embeddings stored"""
+        query = "SELECT * FROM c WHERE IS_DEFINED(c.embedding)"
+        return self.query_documents(query)
 
 
 class KnowledgeBase:
@@ -179,8 +247,13 @@ class KnowledgeBase:
         self.flattened_df = splitted_df.explode('chunks').reset_index(drop=True)
         return self.flattened_df
     
-    def store_to_cosmos(self) -> None:
-        """Store processed data to Cosmos DB"""
+    def store_to_cosmos(self, embeddings: List[List[float]] = None) -> None:
+        """
+        Store processed data to Cosmos DB, optionally with embeddings
+        
+        Args:
+            embeddings: Optional list of embedding vectors corresponding to each chunk
+        """
         if self.flattened_df is None:
             raise ValueError("Text must be processed first. Call process_text()")
         
@@ -191,18 +264,30 @@ class KnowledgeBase:
                 'text': row['text'],
                 'chunk': row['chunks']
             }
-            self.cosmos_client.store_document(document)
+            
+            if embeddings and idx < len(embeddings):
+                # Store with embedding if provided
+                self.cosmos_client.store_document_with_embedding(document, embeddings[idx])
+            else:
+                # Store without embedding
+                self.cosmos_client.store_document(document)
         
-        print(f"Stored {len(self.flattened_df)} chunks to Cosmos DB")
+        print(f"Stored {len(self.flattened_df)} chunks to Cosmos DB" + 
+              (" with embeddings" if embeddings else ""))
     
     def get_processed_data(self) -> pd.DataFrame:
         """Get the processed and flattened DataFrame"""
         return self.flattened_df
     
-    def build_knowledge_base(self) -> pd.DataFrame:
+    def build_knowledge_base(self, with_embeddings: bool = False, 
+                           embedding_service = None) -> pd.DataFrame:
         """
         Complete pipeline: load data, process text, and store to Cosmos DB
         
+        Args:
+            with_embeddings: Whether to generate and store embeddings
+            embedding_service: Optional embedding service for generating embeddings
+            
         Returns:
             Processed DataFrame
         """
@@ -212,8 +297,14 @@ class KnowledgeBase:
         print("Processing text into chunks...")
         self.process_text()
         
+        embeddings = None
+        if with_embeddings and embedding_service:
+            print("Generating embeddings...")
+            texts = self.flattened_df['chunks'].tolist()
+            embeddings = embedding_service.create_embeddings_batch(texts)
+        
         print("Storing to Cosmos DB...")
-        self.store_to_cosmos()
+        self.store_to_cosmos(embeddings)
         
         print("Knowledge base build complete!")
         return self.flattened_df
