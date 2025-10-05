@@ -196,12 +196,16 @@ def main():
     """Main application entry point"""
     parser = argparse.ArgumentParser(description="RAG Chatbot Application with Dual Search Modes")
     parser.add_argument('command', choices=[
-        'setup', 'build-kb', 'create-embeddings', 'chat', 'test', 'quick-test', 'full-setup'
+        'setup', 'build-kb', 'create-embeddings', 'chat', 'test', 'quick-test', 'full-setup', 'web'
     ], help='Command to execute')
     parser.add_argument('--embeddings-path', default='embeddings', 
                        help='Path for saving/loading embeddings (default: embeddings)')
     parser.add_argument('--mode', choices=['cached', 'cosmosdb'], default='cached',
                        help='Search mode: cached (in-memory) or cosmosdb (direct vector search)')
+    parser.add_argument('--port', type=int, default=5000,
+                       help='Port for web interface (default: 5000)')
+    parser.add_argument('--host', default='127.0.0.1',
+                       help='Host for web interface (default: 127.0.0.1)')
     
     args = parser.parse_args()
     
@@ -261,11 +265,32 @@ def main():
                 quick_test(args.embeddings_path, args.mode)
                 print(f"\nFull setup complete for {args.mode} mode!")
                 print(f"You can now run 'python main.py chat --mode {args.mode}' to start chatting.")
+                print(f"Or run 'python main.py web --mode {args.mode}' to start the web interface.")
                 print(f"To try the other mode, use --mode {'cosmosdb' if args.mode == 'cached' else 'cached'}")
             else:
                 print(f"\nSetup failed during embedding creation.")
         else:
             print(f"\nSetup failed during knowledge base creation.")
+    
+    elif args.command == 'web':
+        # Start web interface
+        if not setup_environment():
+            return
+        
+        print(f"🌐 Starting RAG Chatbot Web Interface in {args.mode} mode...")
+        print(f"Web server will be available at: http://{args.host}:{args.port}")
+        print("Press Ctrl+C to stop the server")
+        
+        try:
+            from app import create_app
+            web_app = create_app(search_mode=args.mode, debug=False)
+            web_app.run(host=args.host, port=args.port, debug=False)
+        except ImportError:
+            print("Flask is not installed. Please install it with: pip install flask")
+        except Exception as e:
+            print(f"Failed to start web server: {e}")
+            print("Make sure your knowledge base is set up first:")
+            print(f"  python main.py full-setup --mode {args.mode}")
 
 
 if __name__ == "__main__":
